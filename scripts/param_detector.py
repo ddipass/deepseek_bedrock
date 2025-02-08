@@ -4,16 +4,24 @@
 import json
 import subprocess
 import psutil
-import sys
+import os, sys
 import logging
 from typing import Dict, Any
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
 from config import Config
 
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filename=f'{Config.LOG_DIR}/param_detector.log'
+    handlers=[
+        logging.FileHandler(f'{Config.LOG_DIR}/param_detector.log'),
+        logging.StreamHandler()  # 添加这行来同时输出到控制台
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -33,14 +41,40 @@ class ResourceDetector:
             # 获取Neuron设备信息
             neuron_devices = []
             try:
-                neuron_info = json.loads(subprocess.check_output(['neuron-ls', '--json']).decode())
-                for device in neuron_info.get('neuron_devices', []):
-                    neuron_devices.append({
-                        'device_id': device.get('device_id', ''),
-                        'memory_total': device.get('memory', 0),
-                        'memory_available': device.get('memory_available', 0),
-                        'nc_count': device.get('nc_count', 0)
-                    })
+                # 执行 neuron-ls 命令
+                output = subprocess.check_output(['neuron-ls']).decode()
+                
+                # 解析输出前先打印看看完整输出，便于调试
+                logger.info(f"Raw neuron-ls output:\n{output}")
+                
+                # 解析输出
+                lines = output.split('\n')
+                device_found = False
+                for line in lines:
+                    if '|' in line and any(c.isdigit() for c in line):  # 修改判断条件
+                        parts = [p.strip() for p in line.split('|') if p.strip()]
+                        if len(parts) >= 3:
+                            try:
+                                device_id = parts[0]
+                                nc_count = int(parts[1])  # 核心数
+                                # 处理形如 "32 GB" 的内存字符串
+                                memory_str = parts[2].split()[0]  # 取第一个数字
+                                memory = int(memory_str) * 1024 * 1024 * 1024  # GB转字节
+                                
+                                neuron_devices.append({
+                                    'device_id': device_id,
+                                    'memory_total': memory,
+                                    'memory_available': memory,  # 假设全部可用
+                                    'nc_count': nc_count
+                                })
+                                device_found = True
+                            except (ValueError, IndexError) as e:
+                                logger.error(f"Error parsing line '{line}': {e}")
+                                continue
+                
+                if not device_found:
+                    logger.warning("No Neuron devices found in the output")
+                    
             except Exception as e:
                 logger.error(f"Failed to get Neuron device info: {e}")
             
@@ -56,46 +90,46 @@ class ResourceDetector:
 
     def _calculate_tensor_parallel_size(self) -> int:
         """计算张量并行度"""
-        total_cores = sum(device.get('nc_count', 0) for device in self.system_resources['neuron_devices'])
-        if total_cores >= 8:
-            return 8
-        elif total_cores >= 4:
+        device_count = len(self.system_resources['neuron_devices'])
+        if device_count >= 8:  # inf2.48xlarge
+            return 8  # 使用8个设备以获得最佳性能平衡
+        elif device_count >= 4:
             return 4
-        elif total_cores >= 2:
-            return 2
-        return 1
+        return 2
 
     def _calculate_block_size(self) -> int:
         """计算KV缓存块大小"""
         total_memory_gb = sum(d.get('memory_total', 0) for d in self.system_resources['neuron_devices']) / (1024**3)
         
-        if total_memory_gb >= 32:
+        if total_memory_gb >= 384:  # inf2.48xlarge (12 * 32GB = 384GB)
             return 32
-        elif total_memory_gb >= 16:
+        elif total_memory_gb >= 256:
+            return 24
+        elif total_memory_gb >= 128:
             return 16
-        elif total_memory_gb >= 8:
-            return 8
-        return 4
+        return 8
 
     def _calculate_max_num_seqs(self) -> int:
         """计算最大并行序列数"""
         total_memory_gb = sum(d.get('memory_total', 0) for d in self.system_resources['neuron_devices']) / (1024**3)
         
-        if total_memory_gb >= 32:
-            return 16
-        elif total_memory_gb >= 16:
+        if total_memory_gb >= 384:  # inf2.48xlarge
+            return 16  # 更保守的值以确保稳定性
+        elif total_memory_gb >= 256:
+            return 12
+        elif total_memory_gb >= 128:
             return 8
-        elif total_memory_gb >= 8:
-            return 4
-        return 2
+        return 4
 
     def _calculate_max_model_len(self) -> int:
         """计算最大模型长度"""
         total_memory_gb = sum(d.get('memory_total', 0) for d in self.system_resources['neuron_devices']) / (1024**3)
         
-        if total_memory_gb >= 32:
+        if total_memory_gb >= 384:  # inf2.48xlarge
             return 8192
-        elif total_memory_gb >= 16:
+        elif total_memory_gb >= 256:
+            return 6144
+        elif total_memory_gb >= 128:
             return 4096
         return 2048
 

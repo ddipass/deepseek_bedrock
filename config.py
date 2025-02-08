@@ -9,9 +9,10 @@ class Config:
     """DeepSeek 部署配置"""
     
     # 模型配置
-    MODEL_REPO: str = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    # MODEL_REPO: str = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    MODEL_REPO: str = "deepseek-ai/DeepSeek-R1"
     MODEL_DIR: str = "/home/ubuntu/models"
-    MODEL_NAME: str = "deepseek-8b"
+    MODEL_NAME: str = "deepseek-685b"
     
     # API配置
     HF_TOKEN: str = os.getenv("HUGGING_FACE_TOKEN")
